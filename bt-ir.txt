@@ -1,0 +1,49 @@
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRsend.h>
+#include <IRutils.h>
+#include <BluetoothSerial.h>
+
+const uint16_t RECV_PIN = 23;  // Use correct GPIO for IR Receiver
+const uint16_t kIrLedPin = 22;  // Pin for IR LED
+BluetoothSerial SerialBT;  // Bluetooth Serial instance
+
+IRrecv irrecv(RECV_PIN);
+IRsend irsend(kIrLedPin);       // IR sender
+decode_results results;
+
+void setup() {
+  Serial.begin(115200);
+  SerialBT.begin("ESP32_S-IR");  // Bluetooth device name
+  irrecv.enableIRIn();  // Start the IR receiver
+  irsend.begin();  // Initialize IR transmitter
+}
+
+void loop() {
+  if (irrecv.decode(&results)) {
+    Serial.println("IR signal received!");
+    SerialBT.print("Protocol: ");
+    SerialBT.println(results.decode_type);  // Send protocol to Bluetooth
+    SerialBT.print("Hex code: ");
+    serialPrintUint64(results.value, HEX);  // Send hex value to Bluetooth
+    SerialBT.println();
+
+    // Optionally send raw data in microseconds
+    SerialBT.println(resultToSourceCode(&results));
+
+    irrecv.resume();  // Get ready for the next signal
+    delay(100);  // Adjust the delay if necessary
+  }
+
+  if (SerialBT.available()) {
+    String hexString = SerialBT.readStringUntil('\n');  // Receive hex from mobile
+    Serial.print("Received hex: ");
+    Serial.println(hexString);
+    uint32_t hexCode = strtoul(hexString.c_str(), NULL, 16);  // Convert hex string to number
+    irsend.sendNEC(hexCode, 32);  // Transmit the IR signal (NEC protocol example)
+    Serial.println("IR signal transmitted!");  // Debug
+  }
+
+
+
+}
