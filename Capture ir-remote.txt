@@ -1,0 +1,30 @@
+
+#include <IRremoteESP8266.h>
+#include <IRrecv.h>
+#include <IRutils.h>
+
+const uint16_t RECV_PIN = 23; // Use the correct GPIO pin for ESP32
+
+IRrecv irrecv(RECV_PIN);
+decode_results results;
+
+void setup() {
+  Serial.begin(115200);
+  irrecv.enableIRIn(); // Start the receiver
+}
+
+void loop() {
+  if (irrecv.decode(&results)) {
+    Serial.print("Protocol: ");
+    Serial.println(results.decode_type);  // Print the protocol type
+    Serial.print("Raw data: ");
+    serialPrintUint64(results.value, HEX);  // Print the raw hex value
+    Serial.println();
+    
+    // To print the raw data in microseconds
+    Serial.println(resultToSourceCode(&results));
+    
+    irrecv.resume();  // Prepare to receive the next signal
+  }
+}
+//platformio.....................
