@@ -25,8 +25,6 @@ PubSubClient client(espClient);
 bool offlineMode = false;
 unsigned long lastRestartAttempt = 0;
 unsigned long lastHeartbeat = 0;
-int wifiRetryCount = 0;
-int mqttRetryCount = 0;
 
 // EEPROM addresses for persistent state
 const int eepromRetryCountAddr = 0;
@@ -45,6 +43,11 @@ void loadPersistentState();
 void savePersistentState();
 
 void NetworkTask(void* parameter) {
+    unsigned long lastWiFiCheck = 0; // Track last WiFi check time
+    unsigned long lastMQTTCheck = 0; // Track last MQTT check time
+    int wifiRetryCount = 0; // Track WiFi retries
+    int mqttRetryCount = 0; // Track MQTT retries
+
     setupWatchdog(); // Enable hardware watchdog timer
 
     while (true) {
