@@ -1,0 +1,221 @@
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <EEPROM.h>
+#include <Update.h>
+#include <esp_task_wdt.h>
+
+// Configuration
+const char* ssid = "your_SSID";
+const char* password = "your_PASSWORD";
+const char* mqtt_server = "your_MQTT_BROKER";
+const char* mqtt_user = "your_MQTT_USER";
+const char* mqtt_password = "your_MQTT_PASSWORD";
+const char* subscribe_topic = "your_SUBSCRIBE_TOPIC";
+const char* ota_topic = "your_OTA_TOPIC";
+
+// Constants
+const int maxRetryLimit = 5; // Maximum retries before restart
+const unsigned long maxReconnectDelay = 60000; // 1 minute (exponential backoff max delay)
+const unsigned long restartDelay = 300000; // 5 minutes (delay before restart)
+const unsigned long heartbeatInterval = 60000; // 1 minute (heartbeat interval)
+
+// Globals
+WiFiClient espClient;
+PubSubClient client(espClient);
+bool offlineMode = false;
+unsigned long lastRestartAttempt = 0;
+unsigned long lastHeartbeat = 0;
+int wifiRetryCount = 0;
+int mqttRetryCount = 0;
+
+// EEPROM addresses for persistent state
+const int eepromRetryCountAddr = 0;
+const int eepromRestartReasonAddr = 50; // 50 bytes reserved for restart reason
+
+// Function prototypes
+bool connectToWiFi(int* retryCount);
+bool connectToMQTT(int* retryCount);
+void attemptRestart();
+void enterFailSafeMode();
+void logRestartReason(const char* reason);
+void handleOTAUpdate();
+void sendHeartbeat();
+void setupWatchdog();
+void loadPersistentState();
+void savePersistentState();
+
+void NetworkTask(void* parameter) {
+    setupWatchdog(); // Enable hardware watchdog timer
+
+    while (true) {
+        unsigned long currentMillis = millis();
+
+        // WiFi Connection Check
+        if (currentMillis - lastWiFiCheck > 5000) { // Every 5 seconds
+            lastWiFiCheck = currentMillis;
+            if (!connectToWiFi(&wifiRetryCount)) {
+                offlineMode = true;
+                if (wifiRetryCount >= maxRetryLimit) {
+                    attemptRestart();
+                }
+            } else {
+                wifiRetryCount = 0; // Reset retry count on success
+            }
+        }
+
+        // MQTT Connection Check
+        if (currentMillis - lastMQTTCheck > 10000) { // Every 10 seconds
+            lastMQTTCheck = currentMillis;
+            if (!connectToMQTT(&mqttRetryCount)) {
+                offlineMode = true;
+                if (mqttRetryCount >= maxRetryLimit) {
+                    attemptRestart();
+                }
+            } else {
+                mqttRetryCount = 0; // Reset retry count on success
+            }
+        }
+
+        // MQTT Loop
+        if (client.connected()) {
+            client.loop();
+
+            // Send heartbeat
+            if (currentMillis - lastHeartbeat > heartbeatInterval) {
+                sendHeartbeat();
+                lastHeartbeat = currentMillis;
+            }
+
+            // Handle OTA updates
+            handleOTAUpdate();
+        }
+
+        // Offline Mode Check
+        offlineMode = !(WiFi.status() == WL_CONNECTED && client.connected());
+
+        vTaskDelay(pdMS_TO_TICKS(1000)); // Check every second
+        esp_task_wdt_reset(); // Reset watchdog timer
+    }
+}
+
+bool connectToWiFi(int* retryCount) {
+    if (WiFi.status() == WL_CONNECTED) return true;
+
+    Serial.println("Connecting to WiFi...");
+    WiFi.begin(ssid, password);
+
+    unsigned long retryDelay = 1000;
+    unsigned long startAttemptTime = millis();
+
+    while (WiFi.status() != WL_CONNECTED && *retryCount < maxRetryLimit) {
+        if (millis() - startAttemptTime > retryDelay) {
+            (*retryCount)++;
+            retryDelay = min(retryDelay * 2, maxReconnectDelay);
+            startAttemptTime = millis();
+            Serial.printf("WiFi attempt %d/%d failed. Retrying in %lu ms...\n", *retryCount, maxRetryLimit, retryDelay);
+        }
+        vTaskDelay(pdMS_TO_TICKS(500)); // Reduce CPU blocking
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("WiFi connected.");
+        Serial.printf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+        return true;
+    }
+
+    Serial.println("WiFi unavailable after maximum retries.");
+    return false;
+}
+
+bool connectToMQTT(int* retryCount) {
+    if (client.connected()) return true;
+
+    Serial.println("Attempting to connect to MQTT broker...");
+    String clientId = "ESP32-" + String(random(0xffff), HEX);
+
+    IPAddress brokerIP;
+    if (!WiFi.hostByName(mqtt_server, brokerIP)) {
+        Serial.println("DNS resolution failed for MQTT broker.");
+        return false;
+    }
+
+    unsigned long retryDelay = 1000;
+
+    while (*retryCount < maxRetryLimit) {
+        if (client.connect(clientId.c_str(), mqtt_user, mqtt_password, "device/status", 1, true, "offline")) {
+            Serial.println("MQTT connected successfully.");
+            client.publish("device/status", "online", true); // Retained status
+            if (client.subscribe(subscribe_topic) && client.subscribe(ota_topic)) {
+                Serial.printf("Subscribed to topic successfully: %s & %s\n", subscribe_topic, ota_topic);
+            } else {
+                Serial.println("Failed to subscribe to topic.");
+            }
+            return true;
+        }
+
+        int mqttError = client.state();
+        Serial.printf("MQTT connection failed (rc=%d). Retrying in %lu ms...\n", mqttError, retryDelay);
+
+        (*retryCount)++;
+        retryDelay = min(retryDelay * 2, maxReconnectDelay);
+        vTaskDelay(pdMS_TO_TICKS(retryDelay));
+    }
+
+    Serial.println("MQTT connection failed after maximum retries. Entering offline mode...");
+    client.disconnect();
+    return false;
+}
+
+void attemptRestart() {
+    unsigned long currentMillis = millis();
+    if (currentMillis - lastRestartAttempt > restartDelay) {
+        Serial.println("Maximum retries reached. Restarting ESP32...");
+        lastRestartAttempt = currentMillis;
+
+        // Log the restart reason
+        logRestartReason("Network connection failure");
+
+        // Perform cleanup tasks
+        client.disconnect();
+        WiFi.disconnect();
+
+        // Save persistent state
+        savePersistentState();
+
+        // Restart the device
+        ESP.restart();
+    }
+}
+
+void enterFailSafeMode() {
+    Serial.println("Entering fail-safe mode...");
+    // Implement minimal functionality or deep sleep
+    ESP.deepSleep(0); // Deep sleep until reset
+}
+
+void logRestartReason(const char* reason) {
+    // Save the restart reason to EEPROM
+    EEPROM.put(eepromRestartReasonAddr, reason);
+    EEPROM.commit();
+    Serial.printf("Restart Reason: %s\n", reason);
+}
+
+void setupWatchdog() {
+    esp_task_wdt_init(10, true); // 10-second watchdog timer
+    esp_task_wdt_add(NULL); // Add current task to watchdog
+}
+
+void setup() {
+    Serial.begin(115200);
+    EEPROM.begin(512); // Initialize EEPROM
+    loadPersistentState(); // Load retry counts and restart reason
+
+    WiFi.begin(ssid, password);
+    client.setServer(mqtt_server, 1883);
+
+    xTaskCreate(NetworkTask, "NetworkTask", 4096, NULL, 1, NULL);
+}
+
+void loop() {
+    // Empty loop
+}
