@@ -25,6 +25,8 @@ PubSubClient client(espClient);
 bool offlineMode = false;
 unsigned long lastRestartAttempt = 0;
 unsigned long lastHeartbeat = 0;
+int wifiRetryCount = 0;
+int mqttRetryCount = 0;
 
 // EEPROM addresses for persistent state
 const int eepromRetryCountAddr = 0;
@@ -206,6 +208,34 @@ void logRestartReason(const char* reason) {
 void setupWatchdog() {
     esp_task_wdt_init(10, true); // 10-second watchdog timer
     esp_task_wdt_add(NULL); // Add current task to watchdog
+}
+
+void savePersistentState() {
+    // Save retry counts and restart reason to EEPROM
+    EEPROM.put(eepromRetryCountAddr, wifiRetryCount);
+    EEPROM.put(eepromRetryCountAddr + sizeof(int), mqttRetryCount);
+    EEPROM.commit(); // Commit changes to EEPROM
+    Serial.println("Persistent state saved.");
+}
+
+void loadPersistentState() {
+    // Load retry counts from EEPROM
+    EEPROM.get(eepromRetryCountAddr, wifiRetryCount);
+    EEPROM.get(eepromRetryCountAddr + sizeof(int), mqttRetryCount);
+    Serial.println("Persistent state loaded.");
+}
+
+void sendHeartbeat() {
+    if (client.connected()) {
+        client.publish("device/heartbeat", "alive"); // Publish heartbeat message
+        Serial.println("Heartbeat sent.");
+    } else {
+        Serial.println("Cannot send heartbeat: MQTT disconnected.");
+    }
+}
+
+void handleOTAUpdate() {
+    Serial.println("OTA update received. Starting update...");
 }
 
 void setup() {
