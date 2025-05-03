@@ -1,0 +1,71 @@
+#include <RCSwitch.h>
+
+RCSwitch mySwitch = RCSwitch();
+String inputString = "";
+
+void setup() {
+  Serial.begin(115200);
+
+  // Enable Receiver on GPIO 26
+  mySwitch.enableReceive(26);  
+
+  // Enable Transmitter on GPIO 25
+  mySwitch.enableTransmit(25); 
+
+  Serial.println("ESP32 RF Send/Receive Ready...");
+}
+
+void loop() {
+  // --- Receive Mode ---
+  if (mySwitch.available()) {
+    unsigned long receivedValue = mySwitch.getReceivedValue();
+    unsigned int bitLength = mySwitch.getReceivedBitlength();
+    unsigned int protocol = mySwitch.getReceivedProtocol();
+    unsigned int delay = mySwitch.getReceivedDelay();
+    unsigned int* raw = mySwitch.getReceivedRawdata();
+
+    Serial.println("=== RF Signal Received ===");
+    if (receivedValue == 0) {
+      Serial.println("Unknown code (possible noise)");
+    } else {
+      Serial.print("Value: ");
+      Serial.println(receivedValue);
+      Serial.print("Bit Length: ");
+      Serial.println(bitLength);
+      Serial.print("Delay (µs): ");
+      Serial.println(delay);
+      Serial.print("Protocol: ");
+      Serial.println(protocol);
+
+      Serial.print("Raw Data (approx): ");
+      for (int i = 0; i < bitLength * 2; i++) {  // bitLength * 2 is a good estimate
+        Serial.print(raw[i]);
+        Serial.print(" ");
+      }
+      Serial.println();
+
+
+    }
+    Serial.println("==========================");
+
+    mySwitch.resetAvailable();
+  }
+
+  // --- Send Mode from Serial Input ---
+  while (Serial.available()) {
+    char inChar = (char)Serial.read();
+    if (inChar == '\n') {
+      long code = inputString.toInt();
+      if (code > 0) {
+        mySwitch.send(code, 24);  // default: 24-bit, protocol 1
+        Serial.print("Sent code: ");
+        Serial.println(code);
+      } else {
+        Serial.println("Invalid input. Please enter a number.");
+      }
+      inputString = "";
+    } else {
+      inputString += inChar;
+    }
+  }
+}
