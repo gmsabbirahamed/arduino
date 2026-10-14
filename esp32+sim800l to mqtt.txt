@@ -1,32 +1,80 @@
 #define TINY_GSM_MODEM_SIM800 // Define the GSM modem model
 
+#include <Arduino.h>
 #include <TinyGsmClient.h>
 #include <PubSubClient.h>
-#include <ArduinoJson.h> // Optional for advanced JSON payloads
+
+long random(long min, long max) {
+    return min + (esp_random() % (max - min));
+}
 
 // Debug Serial and SIM800L connection pins
 #define SerialMon Serial
 #define SerialAT Serial1
-#define MODEM_RST 5   // Reset pin for SIM800L (if used)
-#define MODEM_PWRKEY 4 // Power key pin (optional)
+#define MODEM_RST 15   // Reset pin for SIM800L (if used)
 #define MODEM_TX 17    // Connect to SIM800L RX
 #define MODEM_RX 16    // Connect to SIM800L TX
 
 // Replace with your network details
-const char apn[] = "your_apn";      // APN of your mobile network
+const char apn[] = "internet";      // APN of your mobile network
 const char user[] = "";            // APN username (if required)
 const char pass[] = "";            // APN password (if required)
 
 // MQTT Broker settings
-const char* broker = "broker2.com";
-const char* mqttUser = "user2";
-const char* mqttPass = "pass2";
+const char* broker = "broker2.dma-bd.com";
+//const char* mqttUser = "user";
+//const char* mqttPass = "pass";
 const char* topic = "sabbir/gprs";
 
 // TinyGSM initialization
 TinyGsm modem(SerialAT);
 TinyGsmClient mqttClient(modem);
 PubSubClient mqtt(mqttClient);
+
+
+// Reconnect to the MQTT broker
+void reconnectMqtt() {
+  while (!mqtt.connected()) {
+    SerialMon.print("Connecting to MQTT...");
+    if (mqtt.connect("SIM800Client", mqttUser, mqttPass)) {
+      SerialMon.println("connected.");
+    } else {
+      SerialMon.print("failed, rc=");
+      SerialMon.print(mqtt.state());
+      SerialMon.println(" retrying in 5 seconds...");
+      delay(5000);
+    }
+  }
+}
+
+// Handle incoming MQTT messages (optional)
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  SerialMon.print("Message arrived on topic: ");
+  SerialMon.println(topic);
+  SerialMon.print("Message: ");
+  for (int i = 0; i < length; i++) {
+    SerialMon.print((char)payload[i]);
+  }
+  SerialMon.println();
+}
+
+// Send random integer and string to MQTT
+void sendMqttData() {
+  // Prepare data
+  int randomValue = random(1, 100); // Generate random integer
+  String message = "hello sabbir";
+
+  // Publish data
+  String payload = String("{\"random\":") + randomValue + ",\"message\":\"" + message + "\"}";
+  SerialMon.print("Publishing message: ");
+  SerialMon.println(payload);
+
+  if (mqtt.publish(topic, payload.c_str())) {
+    SerialMon.println("Message published successfully.");
+  } else {
+    SerialMon.println("Failed to publish message.");
+  }
+}
 
 void setup() {
   // Initialize Serial for debugging
@@ -79,49 +127,5 @@ void loop() {
   if (millis() - lastSend > 10000) {
     lastSend = millis();
     sendMqttData();
-  }
-}
-
-// Reconnect to the MQTT broker
-void reconnectMqtt() {
-  while (!mqtt.connected()) {
-    SerialMon.print("Connecting to MQTT...");
-    if (mqtt.connect("SIM800Client", mqttUser, mqttPass)) {
-      SerialMon.println("connected.");
-    } else {
-      SerialMon.print("failed, rc=");
-      SerialMon.print(mqtt.state());
-      SerialMon.println(" retrying in 5 seconds...");
-      delay(5000);
-    }
-  }
-}
-
-// Handle incoming MQTT messages (optional)
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
-  SerialMon.print("Message arrived on topic: ");
-  SerialMon.println(topic);
-  SerialMon.print("Message: ");
-  for (int i = 0; i < length; i++) {
-    SerialMon.print((char)payload[i]);
-  }
-  SerialMon.println();
-}
-
-// Send random integer and string to MQTT
-void sendMqttData() {
-  // Prepare data
-  int randomValue = random(1, 100); // Generate random integer
-  String message = "hello sabbir";
-
-  // Publish data
-  String payload = String("{\"random\":") + randomValue + ",\"message\":\"" + message + "\"}";
-  SerialMon.print("Publishing message: ");
-  SerialMon.println(payload);
-
-  if (mqtt.publish(topic, payload.c_str())) {
-    SerialMon.println("Message published successfully.");
-  } else {
-    SerialMon.println("Failed to publish message.");
   }
 }
